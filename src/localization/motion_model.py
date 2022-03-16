@@ -44,7 +44,8 @@ class MotionModel:
         for i in range(n):
             R = self.make_rotation_matrix(particles[i, 2])
             T = self.make_transformation_matrix(R, particles[i, :])
-            updated_particles[i, :] = np.matmul(T, odometry[i, :])
+            updated_particles[i, :2] = np.matmul(T, odometry[i, :])[:, :2]
+            updated_particles[i, 2] = particles[i, 2] + odometry[i, 2]
         return updated_particles
 
     def make_transformation_matrix(self, R, p):
