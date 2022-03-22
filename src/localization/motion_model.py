@@ -12,8 +12,9 @@ class MotionModel:
         # model here.
         self.mean = mean
         self.sigma = sigma
-        self.deterministic = rospy.get_param('/localization/deterministic')
-        print("[Insert joke for graders here]")
+        self.alpha = [0.1, 0.1, 0.1, 0.1]
+        # rospy.get_param('/localization/deterministic')
+        self.deterministic = True
         ####################################
 
     def evaluate(self, particles, odometry):
@@ -38,15 +39,46 @@ class MotionModel:
         ####################################
         n, _ = particles.shape
         updated_particles = np.zeros([n, 3])
-        if not self.deterministic:
-            noise = np.random.normal(self.mean, self.sigma, (n, 3))
-            odometry = odometry + noise
         for i in range(n):
             R = self.make_rotation_matrix(particles[i, 2])
             T = self.make_transformation_matrix(R, particles[i, :])
-            updated_particles[i, :2] = np.matmul(T, odometry[i, :])[:, :2]
-            updated_particles[i, 2] = particles[i, 2] + odometry[i, 2]
+            p_t = np.array([odometry[0], odometry[1], 1])
+            updated_particles[i, :2] = np.matmul(T, p_t)[:2]
+        updated_particles[:, 2] = particles[:, 2] + odometry[2]
+        # Noise model based on Probabilistic Robotics Section 5.4
+        # Key Assumptions
+        # - Three separate transformation steps: rotation, translation, rotation
+        #  - Our motion model assumes that each transformation step is corrupted by independent noise.
+
+        if not self.deterministic:
+            # Calculate relative motion parameters
+            odometry = updated_particles - particles
+            rot1 = np.arctan2(odometry[:, 1], odometry[:, 0]) - particles[:, 2]
+            trans = np.sqrt(odometry[:, 0]**2 + odometry[:, 1]**2)
+            rot2 = odometry[:, 2] - rot1
+
+            # Add noise
+            noisy_rot1 = rot1 - \
+                self.sample(self.alpha[0]*rot1 + self.alpha[1] * trans)
+            noisy_trans = trans - \
+                self.sample(self.alpha[2]*trans + self.alpha[3]*(rot1+rot2))
+            noisy_rot2 = rot2 - \
+                self.sample(self.alpha[0]*rot2 + self.alpha[1]*trans)
+            rot1, rot2, trans = noisy_rot1, noisy_rot2, noisy_trans
+
+            # Calculate updated particle position based on random noise sample
+            updated_particles[:, 0] = particles[:, 0] + \
+                trans*np.cos(particles[:, 2] + rot1)
+            updated_particles[:, 1] = particles[:, 1] + \
+                trans*np.sin(particles[:, 2] + rot1)
+            updated_particles[:, 2] = particles[:, 2] + rot1 + rot2
         return updated_particles
+
+    def sample(self, var):
+        """
+        Sample from a normal distribution with mean 0 and variance var
+        """
+        return np.random.normal(0, np.sqrt(var), var.shape)
 
     def make_transformation_matrix(self, R, p):
         """
