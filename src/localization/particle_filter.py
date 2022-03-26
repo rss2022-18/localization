@@ -1,20 +1,29 @@
 #!/usr/bin/env python2
 
+from concurrent.futures import thread ## look into this more
 import rospy
+import numpy as np
 from sensor_model import SensorModel
 from motion_model import MotionModel
+import threading #useful for actually threading the particle filter. 
+
+import tf
 
 from sensor_msgs.msg import LaserScan
 from nav_msgs.msg import Odometry
-from geometry_msgs.msg import PoseWithCovarianceStamped
+from geometry_msgs.msg import PoseWithCovarianceStamped, Pose, PoseStamped
+from geometry_msgs.msg import Point
+from visualization_msgs.msg import Marker
+
 
 
 class ParticleFilter:
 
     def __init__(self):
         # Get parameters
-        self.particle_filter_frame = \
-                rospy.get_param("~particle_filter_frame")
+        self.particle_filter_frame = rospy.get_param("~particle_filter_frame", "/base_link_pf")
+        self.num_particles         = rospy.get_param("~num_particles", 200)
+        self.num_beams_per_particle= rospy.get_param("~num_beams_per_particle", 100)
 
         # Initialize publishers/subscribers
         #
@@ -25,14 +34,16 @@ class ParticleFilter:
         #     a twist component, you will only be provided with the
         #     twist component, so you should rely only on that
         #     information, and *not* use the pose component.
+
+
         scan_topic = rospy.get_param("~scan_topic", "/scan")
         odom_topic = rospy.get_param("~odom_topic", "/odom")
+        map_topic  = rospy.get_param("~map_topic", "/map")
+
         self.laser_sub = rospy.Subscriber(scan_topic, LaserScan,
-                                          YOUR_LIDAR_CALLBACK, # TODO: Fill this in
-                                          queue_size=1)
+                                          self.lidar_cb, queue_size=1)
         self.odom_sub  = rospy.Subscriber(odom_topic, Odometry,
-                                          YOUR_ODOM_CALLBACK, # TODO: Fill this in
-                                          queue_size=1)
+                                          self.odom_cb, queue_size=1)
 
         #  *Important Note #2:* You must respond to pose
         #     initialization requests sent to the /initialpose
@@ -40,8 +51,7 @@ class ParticleFilter:
         #     "Pose Estimate" feature in RViz, which publishes to
         #     /initialpose.
         self.pose_sub  = rospy.Subscriber("/initialpose", PoseWithCovarianceStamped,
-                                          YOUR_POSE_INITIALIZATION_CALLBACK, # TODO: Fill this in
-                                          queue_size=1)
+                                          self.pose_init_cb, queue_size=1)
 
         #  *Important Note #3:* You must publish your pose estimate to
         #     the following topic. In particular, you must use the
@@ -50,6 +60,7 @@ class ParticleFilter:
         #     odometry you publish here should be with respect to the
         #     "/map" frame.
         self.odom_pub  = rospy.Publisher("/pf/pose/odom", Odometry, queue_size = 1)
+        self.viz_pub   = rospy.Publisher("/particle_points", Marker, queue_size=1)
         
         # Initialize the models
         self.motion_model = MotionModel()
@@ -64,6 +75,31 @@ class ParticleFilter:
         #
         # Publish a transformation frame between the map
         # and the particle_filter_frame.
+        #Other Initializations:
+        self.particle_pos = np.zeros((self.num_particles, 3)) #3 is x,y,z
+        self.particle_prob= np.ones((self.num_particles))*1.0/float(self.num_particles)
+
+        self.t_minus_1 = None
+        self.lock_thread= threading.RLock()
+
+        # Debugging and visualization
+        self.visuals = True
+        self.noise   = False
+
+        # Transform Listeners
+        self.br_transform = tf.TransformBroadcaster()
+        self.tf_listener = tf.TransformListener()
+
+    def lidar_cb(self, data):
+        print("Lidar!")
+
+    def odom_cb(self, data):
+        print("Odometry!")
+
+    def pose_init_cb(self, data):
+        print("Pose Initialization!")
+
+
 
 
 if __name__ == "__main__":
