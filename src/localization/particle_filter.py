@@ -1,6 +1,6 @@
 #!/usr/bin/env python2
 
-from concurrent.futures import thread ## look into this more
+from concurrent.futures import thread ## look into this more, dont know what this does. 
 import rospy
 import numpy as np
 from scipy import stats
@@ -115,11 +115,19 @@ class ParticleFilter:
         
         self.odom_pub.publish(p)
 
+    """
+    Function: lidar_cb
+    Inputs: Self, laser_scan data
 
+    Whenever we get sensor data, use the sensor model to compute the particle probabilities.
+    Use these probabilities to resample the particles based on these probabilites. 
 
+    When the particles are updated:
+    Determine the "average" particle pose and publish that transform. 
+    """
     def lidar_cb(self, data):
         print("Lidar!")
-        with self.lock_thread:
+        with self.lock_thread:  # ROS Callbacks are not thread safe!
             angle_step = int(np.ceil(len(data.ranges)/float(self.num_beams_per_particle)))
             data_downsized = np.array(data.ranges)[::angle_step]
 
@@ -128,6 +136,7 @@ class ParticleFilter:
             self.particle_prob = self.particle_prob/np.sum(self.particle_prob)
 
             # Resampling ->  x,y,theta
+            # use np.random.choice!
             index_sample = np.random.choice(np.arange(0, self.num_particles), size=self.num_particles, p=self.particle_prob)
             self.particle_pos = self.particle_pos[index_sample, :]
 
@@ -144,10 +153,19 @@ class ParticleFilter:
 
 
 
+    """
+    Function: odom_cb
+    Inputs: self, odometry data
 
+    Whenever we get Odometry data, use the motion model to update the particle positions. 
+
+    When the particles are updated, determine the "average" particle pose and publish the transform.
+    
+    """
     def odom_cb(self, data):
+    
         print("Odometry!")
-        with self.lock_thread:
+        with self.lock_thread: # ROS Callbacks are not thread safe!
             odom_to_world = PoseStamped()
             odom_to_world.header = data.header
             odom_to_world.pose = data.pose.pose
@@ -192,6 +210,10 @@ class ParticleFilter:
             # Position:
             (x_avg, y_avg) = np.mean(self.particle_pos[:,:2], axis=0)
 
+
+            """
+            Consider the mean of circular quantities. 
+            """
             sum_of_sin = np.sum(np.sin(self.particle_pos[:,2]))
             sum_of_cos = np.sum(np.cos(self.particle_pos[:,2]))
             th_avg_ang = np.arctan2(sum_of_sin, sum_of_cos)
@@ -201,10 +223,14 @@ class ParticleFilter:
             self.publish_odometry(x_avg, y_avg, quat_pub)
 
 
-
+    """
+    Consider how to initialize the particles. Use some of the interactive points in Rviz to set an
+    initialize guess of the robots location with a random spread of locations spread around a
+    clicked point or pose. Make it simple on yourself and avoid using the kidnapped robot problem. 
+    """
     def pose_init_cb(self, data):
         print("Pose Initialization!")
-        with self.lock_thread:
+        with self.lock_thread: # ROS callbacks are not thread safe!
             x = data.pose.pose.position.x
             y = data.pose.pose.position.y
             th= self.quat_to_pitch(data.pose.pose.orientation)
