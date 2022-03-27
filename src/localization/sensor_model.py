@@ -15,6 +15,7 @@ class SensorModel:
         self.num_beams_per_particle = rospy.get_param("~num_beams_per_particle", )
         self.scan_theta_discretization = rospy.get_param("~scan_theta_discretization")
         self.scan_field_of_view = rospy.get_param("~scan_field_of_view")
+        self.lidar_scale_to_map_scale = rospy.get_param("~lidar_scale_to_map_scale")
 
         ####################################
         # TODO
@@ -53,6 +54,7 @@ class SensorModel:
                 OccupancyGrid,
                 self.map_callback,
                 queue_size=1)
+        self.map_resolution = None
 
     def precompute_sensor_model(self):
         """
@@ -98,7 +100,7 @@ class SensorModel:
         return 0
     
     def calculate_p_short(self, z, d):
-        if z <= d and z >= 0:
+        if z <= d and z >= 0 and d != 0:
             return self.alpha_short * 2/d * (1-z/d)
         return 0
 
@@ -146,7 +148,19 @@ class SensorModel:
         # This produces a matrix of size N x num_beams_per_particle 
 
         scans = self.scan_sim.scan(particles)
+
+        #conversion from meters to pixels
+        observation = np.clip(observation/(self.map_resolution*self.lidar_scale_to_map_scale), 0, 200)
+        scans = np.clip(scans/(self.map_resolution*self.lidar_scale_to_map_scale), 0, 200)
+
+        #rounding for indexing
+        scans = np.round(scans).astype(int)  
+        observation = np.round(observation).astype(int)
+
+        #get probabilities
         result = self.sensor_model_table[observation, scans]
+
+        #multiply probabilities
         result = np.product(result, axis=1)
 
         return result**(1/2.2)
@@ -157,6 +171,7 @@ class SensorModel:
         # Convert the map to a numpy array
         self.map = np.array(map_msg.data, np.double)/100.
         self.map = np.clip(self.map, 0, 1)
+        self.map_resolution = map_msg.info.resolution
 
         # Convert the origin to a tuple
         origin_p = map_msg.info.origin.position 
