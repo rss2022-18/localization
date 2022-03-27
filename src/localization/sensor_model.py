@@ -96,22 +96,22 @@ class SensorModel:
 
     def calculate_p_hit(self, z, d):
         if z >= 0 and z <= self.z_max:
-            return self.alpha_hit*self.eta/np.sqrt(2*np.pi*self.sigma_hit**2)*np.exp(-(z-d)**2/(2*self.sigma_hit**2))
+            return self.alpha_hit*self.eta/float(np.sqrt(2*np.pi*self.sigma_hit**2))*np.exp(-(z-d)**2/float((2*self.sigma_hit**2)))
         return 0
     
     def calculate_p_short(self, z, d):
         if z <= d and z >= 0 and d != 0:
-            return self.alpha_short * 2/d * (1-z/d)
+            return self.alpha_short * 2/float(d) * (1-z/float(d))
         return 0
 
     def calculate_p_max(self, z, d):
         if self.z_max - self.epsilon <= z and z <= self.z_max:
-            return self.alpha_max/self.epsilon
+            return self.alpha_max/float(self.epsilon)
         return 0 
 
     def calculate_p_rand(self, z, d):
         if z <= self.z_max and z >= 0:
-            return self.alpha_rand/self.z_max 
+            return self.alpha_rand/float(self.z_max)
         return 0
 
 
@@ -154,8 +154,8 @@ class SensorModel:
         scans = np.clip(scans/(self.map_resolution*self.lidar_scale_to_map_scale), 0, 200)
 
         #rounding for indexing
-        scans = np.round(scans).astype(int)  
-        observation = np.round(observation).astype(int)
+        scans = scans.astype(int)  
+        observation = observation.astype(int)
 
         #get probabilities
         result = self.sensor_model_table[observation, scans]
