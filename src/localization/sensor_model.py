@@ -11,23 +11,27 @@ class SensorModel:
 
     def __init__(self):
         # Fetch parameters
-        self.map_topic = rospy.get_param("~map_topic")
-        self.num_beams_per_particle = rospy.get_param("~num_beams_per_particle")
+        self.map_topic = rospy.get_param("~map_topic", "/map")
+        self.num_beams_per_particle = rospy.get_param("~num_beams_per_particle", )
         self.scan_theta_discretization = rospy.get_param("~scan_theta_discretization")
         self.scan_field_of_view = rospy.get_param("~scan_field_of_view")
 
         ####################################
         # TODO
         # Adjust these parameters
-        self.alpha_hit = 0
-        self.alpha_short = 0
-        self.alpha_max = 0
-        self.alpha_rand = 0
-        self.sigma_hit = 0
+        self.alpha_hit = 0.74
+        self.alpha_short = 0.07
+        self.alpha_max = 0.07
+        self.alpha_rand = 0.12
+        self.sigma_hit = 8.0
+        self.eta = 1
+        self.epsilon = 0.1
 
         # Your sensor table will be a `table_width` x `table_width` np array:
         self.table_width = 201
         ####################################
+
+        self.z_max = self.table_width - 1
 
         # Precompute the sensor model table
         self.sensor_model_table = None
@@ -69,7 +73,45 @@ class SensorModel:
         returns:
             No return type. Directly modify `self.sensor_model_table`.
         """
-        raise NotImplementedError
+        self.sensor_model_table = np.empty(shape=(self.table_width,self.table_width))
+        #do p hit
+        #TODO: broadcast indices instead of using a for loop
+        for z in range(self.table_width):
+            for d in range(self.table_width):
+                self.sensor_model_table[z,d] = self.calculate_p_hit(z,d)
+        
+        # normalize p hit
+        self.sensor_model_table = self.alpha_hit * self.sensor_model_table / self.sensor_model_table.sum(axis=0, keepdims=1)
+
+        #TODO: broadcast indices instead of using a for loop
+        for z in range(self.table_width):
+            for d in range(self.table_width):
+                rest = self.calculate_p_short(z,d) + self.calculate_p_max(z,d) + self.calculate_p_rand(z,d)
+                self.sensor_model_table[z,d] += rest
+        
+        #normalize
+        self.sensor_model_table = self.sensor_model_table / self.sensor_model_table.sum(axis=0, keepdims=1)
+
+    def calculate_p_hit(self, z, d):
+        if z >= 0 and z <= self.z_max:
+            return self.eta/np.sqrt(2*np.pi*self.sigma_hit**2)*np.exp(-(z-d)**2/(2*self.sigma_hit**2))
+        return 0
+    
+    def calculate_p_short(self, z, d):
+        if z <= d and z >= 0:
+            return self.alpha_short * 2/d * (1-z/d)
+        return 0
+
+    def calculate_p_max(self, z, d):
+        if self.z_max - self.epsilon <= z and z <= self.z_max:
+            return self.alpha_max/self.epsilon
+        return 0 
+
+    def calculate_p_rand(self, z, d):
+        if z <= self.z_max and z >= 0:
+            return self.alpha_rand/self.z_max 
+        return 0
+
 
     def evaluate(self, particles, observation):
         """
@@ -104,6 +146,10 @@ class SensorModel:
         # This produces a matrix of size N x num_beams_per_particle 
 
         scans = self.scan_sim.scan(particles)
+        result = self.sensor_model_table[observation, scans]
+        result = np.product(result, axis=1)
+
+        return result**(1/2.2)
 
         ####################################
 
@@ -113,7 +159,7 @@ class SensorModel:
         self.map = np.clip(self.map, 0, 1)
 
         # Convert the origin to a tuple
-        origin_p = map_msg.info.origin.position
+        origin_p = map_msg.info.origin.position 
         origin_o = map_msg.info.origin.orientation
         origin_o = tf.transformations.euler_from_quaternion((
                 origin_o.x,
