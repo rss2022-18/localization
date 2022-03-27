@@ -80,15 +80,15 @@ class SensorModel:
         #TODO: broadcast indices instead of using a for loop
         for z in range(self.table_width):
             for d in range(self.table_width):
-                self.sensor_model_table[z,d] = self.calculate_p_hit(z,d)
+                self.sensor_model_table[z,d] = float(self.calculate_p_hit(z,d))
         
         # normalize p hit
-        self.sensor_model_table = self.alpha_hit * self.sensor_model_table / self.sensor_model_table.sum(axis=0, keepdims=1)
+        self.sensor_model_table = self.sensor_model_table / self.sensor_model_table.sum(axis=0, keepdims=1)
 
         #TODO: broadcast indices instead of using a for loop
         for z in range(self.table_width):
             for d in range(self.table_width):
-                rest = self.calculate_p_short(z,d) + self.calculate_p_max(z,d) + self.calculate_p_rand(z,d)
+                rest = float(self.calculate_p_short(z,d)) + float(self.calculate_p_max(z,d)) + float(self.calculate_p_rand(z,d))
                 self.sensor_model_table[z,d] += rest
         
         #normalize
@@ -96,7 +96,7 @@ class SensorModel:
 
     def calculate_p_hit(self, z, d):
         if z >= 0 and z <= self.z_max:
-            return self.eta/np.sqrt(2*np.pi*self.sigma_hit**2)*np.exp(-(z-d)**2/(2*self.sigma_hit**2))
+            return self.alpha_hit*self.eta/np.sqrt(2*np.pi*self.sigma_hit**2)*np.exp(-(z-d)**2/(2*self.sigma_hit**2))
         return 0
     
     def calculate_p_short(self, z, d):
