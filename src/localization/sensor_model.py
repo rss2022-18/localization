@@ -83,7 +83,8 @@ class SensorModel:
                 self.sensor_model_table[z,d] = float(self.calculate_p_hit(z,d))
         
         # normalize p hit
-        self.sensor_model_table = self.sensor_model_table / self.sensor_model_table.sum(axis=0, keepdims=1)
+        sums = self.sensor_model_table.sum(axis=0, keepdims=1)
+        self.sensor_model_table = self.sensor_model_table / sums
 
         #TODO: broadcast indices instead of using a for loop
         for z in range(self.table_width):
@@ -92,7 +93,8 @@ class SensorModel:
                 self.sensor_model_table[z,d] += rest
         
         #normalize
-        self.sensor_model_table = self.sensor_model_table / self.sensor_model_table.sum(axis=0, keepdims=1)
+        sums = self.sensor_model_table.sum(axis=0, keepdims=1)
+        self.sensor_model_table = self.sensor_model_table / sums
 
     def calculate_p_hit(self, z, d):
         if z >= 0 and z <= self.z_max:
@@ -105,15 +107,14 @@ class SensorModel:
         return 0
 
     def calculate_p_max(self, z, d):
-        if self.z_max - self.epsilon <= z and z <= self.z_max:
-            return self.alpha_max/float(self.epsilon)
+        if z == self.z_max:
+            return self.alpha_max
         return 0 
 
     def calculate_p_rand(self, z, d):
         if z <= self.z_max and z >= 0:
             return self.alpha_rand/float(self.z_max)
         return 0
-
 
     def evaluate(self, particles, observation):
         """
