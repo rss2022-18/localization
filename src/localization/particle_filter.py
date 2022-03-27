@@ -1,20 +1,33 @@
 #!/usr/bin/env python2
 
+from concurrent.futures import thread ## look into this more
 import rospy
+import numpy as np
+from scipy import stats
 from sensor_model import SensorModel
 from motion_model import MotionModel
+import threading #useful for actually threading the particle filter. 
+
+import tf
 
 from sensor_msgs.msg import LaserScan
 from nav_msgs.msg import Odometry
-from geometry_msgs.msg import PoseWithCovarianceStamped
+from geometry_msgs.msg import PoseWithCovarianceStamped, Pose, PoseStamped
+from geometry_msgs.msg import Point
+from visualization_msgs.msg import Marker
+
+from tf.transformations import euler_from_quaternion, quaternion_from_euler
+
+
 
 
 class ParticleFilter:
 
     def __init__(self):
         # Get parameters
-        self.particle_filter_frame = \
-                rospy.get_param("~particle_filter_frame")
+        self.particle_filter_frame = rospy.get_param("~particle_filter_frame", "/base_link_pf")
+        self.num_particles         = rospy.get_param("~num_particles", 200)
+        self.num_beams_per_particle= rospy.get_param("~num_beams_per_particle", 100)
 
         # Initialize publishers/subscribers
         #
@@ -25,14 +38,16 @@ class ParticleFilter:
         #     a twist component, you will only be provided with the
         #     twist component, so you should rely only on that
         #     information, and *not* use the pose component.
+
+
         scan_topic = rospy.get_param("~scan_topic", "/scan")
         odom_topic = rospy.get_param("~odom_topic", "/odom")
+        map_topic  = rospy.get_param("~map_topic", "/map")
+
         self.laser_sub = rospy.Subscriber(scan_topic, LaserScan,
-                                          YOUR_LIDAR_CALLBACK, # TODO: Fill this in
-                                          queue_size=1)
+                                          self.lidar_cb, queue_size=1)
         self.odom_sub  = rospy.Subscriber(odom_topic, Odometry,
-                                          YOUR_ODOM_CALLBACK, # TODO: Fill this in
-                                          queue_size=1)
+                                          self.odom_cb, queue_size=1)
 
         #  *Important Note #2:* You must respond to pose
         #     initialization requests sent to the /initialpose
@@ -40,8 +55,7 @@ class ParticleFilter:
         #     "Pose Estimate" feature in RViz, which publishes to
         #     /initialpose.
         self.pose_sub  = rospy.Subscriber("/initialpose", PoseWithCovarianceStamped,
-                                          YOUR_POSE_INITIALIZATION_CALLBACK, # TODO: Fill this in
-                                          queue_size=1)
+                                          self.pose_init_cb, queue_size=1)
 
         #  *Important Note #3:* You must publish your pose estimate to
         #     the following topic. In particular, you must use the
@@ -50,6 +64,7 @@ class ParticleFilter:
         #     odometry you publish here should be with respect to the
         #     "/map" frame.
         self.odom_pub  = rospy.Publisher("/pf/pose/odom", Odometry, queue_size = 1)
+        self.viz_pub   = rospy.Publisher("/particle_points", Marker, queue_size=1)
         
         # Initialize the models
         self.motion_model = MotionModel()
@@ -64,6 +79,150 @@ class ParticleFilter:
         #
         # Publish a transformation frame between the map
         # and the particle_filter_frame.
+        #Other Initializations:
+        self.particle_pos = np.zeros((self.num_particles, 3)) #3 is x,y,z
+        self.particle_prob= np.ones((self.num_particles))*1.0/float(self.num_particles)
+
+        self.t_minus_1 = None
+        self.lock_thread= threading.RLock()
+
+        # Debugging and visualization
+        self.visuals = True
+        self.noise   = False
+
+        # Transform Listeners
+        self.br_transform = tf.TransformBroadcaster()
+        self.tf_listener = tf.TransformListener()
+
+    def publish_odometry(self, x_avg, y_avg, quat):
+        p = Odometry()
+        p.header.frame_id = "/map"
+        p.header.stamp = rospy.Time.now()
+        p.pose.pose.position.x = x_avg
+        p.pose.pose.position.y = y_avg
+        p.pose.pose.position.z = 0
+
+        p.pose.pose.orientation.x = quat[0]
+        p.pose.pose.orientation.y = quat[1]
+        p.pose.pose.orientation.z = quat[2]
+        p.pose.pose.orientation.w = quat[3]
+
+        self.br_transform.sendTransform((x_avg,y_avg,0), 
+                                        quat,
+                                        p.header.stamp,
+                                        self.particle_filter_frame,
+                                        "/map")
+        
+        self.odom_pub.publish(p)
+
+
+
+    def lidar_cb(self, data):
+        print("Lidar!")
+        with self.lock_thread:
+            angle_step = int(np.ceil(len(data.ranges)/float(self.num_beams_per_particle)))
+            data_downsized = np.array(data.ranges)[::angle_step]
+
+            # Sensor Model
+            self.particle_prob = self.sensor_model.evaluate(self.particle_pos, data_downsized)
+            self.particle_prob = self.particle_prob/np.sum(self.particle_prob)
+
+            # Resampling ->  x,y,theta
+            index_sample = np.random.choice(np.arange(0, self.num_particles), size=self.num_particles, p=self.particle_prob)
+            self.particle_pos = self.particle_pos[index_sample, :]
+
+            #Change particle positions and publish to pose odom.
+            x_avg = stats.mode(self.particle_pos[:,0]).mode[0]
+            y_avg = stats.mode(self.particle_pos[:,1]).mode[0]
+            th_avg= stats.mode(self.particle_pos[:,2]).mode[0]  # a yaw value
+
+            pub_quat = quaternion_from_euler(0,0,th_avg)
+
+
+            #publish our odometry!
+            self.publish_odometry(x_avg,y_avg, pub_quat)
+
+
+
+
+    def odom_cb(self, data):
+        print("Odometry!")
+        with self.lock_thread:
+            odom_to_world = PoseStamped()
+            odom_to_world.header = data.header
+            odom_to_world.pose = data.pose.pose
+            pt_trans = self.tf_listener.transformPose("/map", odom_to_world)
+
+            #initialization
+            if self.t_minus_1 is None:
+                self.t_minus_1 = rospy.get_time()
+                
+                #state is x,y,theta
+                th = self.quat_to_pitch(pt_trans.pose.orientation)
+
+                state = [pt_trans.pose.position.x, pt_trans.pose.position.y, th]
+                print("Initial Point:" + str(state))
+                self.particle_pos = np.random.normal(loc=state, 
+                                                    scale=[1.5,1.5,np.pi/6], 
+                                                    size=(self.num_particles,3))
+                return
+            
+            #Have the option to add noise to odometry, in this case normal noise
+            if self.noise:
+                noise_x = np.random.normal(scale=0.25)
+                noise_y = np.random.normal(scale=0.25)
+                noise_th= np.random.normal(scale=np.pi/6)
+            else:
+                noise_x = 0
+                noise_y = 0
+                noise_th= 0
+
+            
+            delta_t = rospy.get_time() - self.t_minus_1
+            self.t_minus_1 = rospy.get_time()
+
+            # Propagate forward!
+
+            odom_data = np.array([(data.twist.twist.linear.x+noise_x)*delta_t,
+                                  (data.twist.twist.linear.y+noise_y)*delta_t,
+                                  (data.twist.twist.angular.z+noise_th)*delta_t])
+
+            self.particle_pos = self.motion_model.evaluate(self.particle_pos, odom_data)
+
+            # Position:
+            (x_avg, y_avg) = np.mean(self.particle_pos[:,:2], axis=0)
+
+            sum_of_sin = np.sum(np.sin(self.particle_pos[:,2]))
+            sum_of_cos = np.sum(np.cos(self.particle_pos[:,2]))
+            th_avg_ang = np.arctan2(sum_of_sin, sum_of_cos)
+
+            quat_pub = quaternion_from_euler(0,0,th_avg_ang)
+
+            self.publish_odometry(x_avg, y_avg, quat_pub)
+
+
+
+    def pose_init_cb(self, data):
+        print("Pose Initialization!")
+        with self.lock_thread:
+            x = data.pose.pose.position.x
+            y = data.pose.pose.position.y
+            th= self.quat_to_pitch(data.pose.pose.orientation)
+            self.particle_pos = np.random.normal(loc=[x,y,th], scale=[1.5,1.5,np.pi/6], size=(self.num_particles,3))
+
+    
+
+    def quat_to_pitch(self, quaternion):
+        
+        my_quat = [quaternion.x, quaternion.y, quaternion.z, quaternion.w]
+        rpy = euler_from_quaternion(my_quat)
+        roll = rpy[0]
+        pitch= rpy[1]
+        yaw  = rpy[2]
+
+        return yaw
+
+
 
 
 if __name__ == "__main__":
