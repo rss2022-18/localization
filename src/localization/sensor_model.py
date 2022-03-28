@@ -11,11 +11,12 @@ class SensorModel:
 
     def __init__(self):
         # Fetch parameters
-        self.map_topic = rospy.get_param("~map_topic", "/map")
-        self.num_beams_per_particle = rospy.get_param("~num_beams_per_particle", )
+        self.map_topic = rospy.get_param("~map_topic")
+        self.num_beams_per_particle = rospy.get_param("~num_beams_per_particle")
         self.scan_theta_discretization = rospy.get_param("~scan_theta_discretization")
         self.scan_field_of_view = rospy.get_param("~scan_field_of_view")
         self.lidar_scale_to_map_scale = rospy.get_param("~lidar_scale_to_map_scale")
+        
 
         ####################################
         # TODO
@@ -35,7 +36,7 @@ class SensorModel:
         self.z_max = self.table_width - 1
 
         # Precompute the sensor model table
-        self.sensor_model_table = None
+        self.sensor_model_table = np.zeros((self.table_width, self.table_width))
         self.precompute_sensor_model()
 
         # Create a simulated laser scan
@@ -75,45 +76,46 @@ class SensorModel:
         returns:
             No return type. Directly modify `self.sensor_model_table`.
         """
-        self.sensor_model_table = np.empty(shape=(self.table_width,self.table_width))
+        self.sensor_model_table = np.zeros((self.table_width,self.table_width))
         #do p hit
         #TODO: broadcast indices instead of using a for loop
         for z in range(self.table_width):
             for d in range(self.table_width):
-                self.sensor_model_table[z,d] = float(self.calculate_p_hit(z,d))
+                self.sensor_model_table[z,d] = float(self.p_hit(z,d))
         
         # normalize p hit
         sums = self.sensor_model_table.sum(axis=0, keepdims=1)
         self.sensor_model_table = self.sensor_model_table / sums
+        self.sensor_model_table = self.sensor_model_table * self.alpha_hit
 
         #TODO: broadcast indices instead of using a for loop
         for z in range(self.table_width):
             for d in range(self.table_width):
-                rest = float(self.calculate_p_short(z,d)) + float(self.calculate_p_max(z,d)) + float(self.calculate_p_rand(z,d))
+                rest = self.alpha_short* float(self.p_short(z,d)) + self.alpha_max*float(self.p_max(z,d)) + self.alpha_rand*float(self.p_rand(z,d))
                 self.sensor_model_table[z,d] += rest
         
         #normalize
         sums = self.sensor_model_table.sum(axis=0, keepdims=1)
         self.sensor_model_table = self.sensor_model_table / sums
 
-    def calculate_p_hit(self, z, d):
+    def p_hit(self, z, d):
         if z >= 0 and z <= self.z_max:
-            return self.alpha_hit*self.eta/float(np.sqrt(2*np.pi*self.sigma_hit**2))*np.exp(-(z-d)**2/float((2*self.sigma_hit**2)))
+            return self.eta/float(np.sqrt(2*np.pi*self.sigma_hit**2))*np.exp(-(z-d)**2/float((2*self.sigma_hit**2)))
         return 0
     
-    def calculate_p_short(self, z, d):
+    def p_short(self, z, d):
         if z <= d and z >= 0 and d != 0:
-            return self.alpha_short * 2/float(d) * (1-z/float(d))
+            return 2/float(d) * (1-z/float(d))
         return 0
 
-    def calculate_p_max(self, z, d):
+    def p_max(self, z, d):
         if z == self.z_max:
-            return self.alpha_max
+            return 1
         return 0 
 
-    def calculate_p_rand(self, z, d):
+    def p_rand(self, z, d):
         if z <= self.z_max and z >= 0:
-            return self.alpha_rand/float(self.z_max)
+            return 1.0/float(self.z_max)
         return 0
 
     def evaluate(self, particles, observation):
@@ -151,20 +153,20 @@ class SensorModel:
         scans = self.scan_sim.scan(particles)
 
         #conversion from meters to pixels
-        observation = np.clip(observation/(self.map_resolution*self.lidar_scale_to_map_scale), 0, 200)
-        scans = np.clip(scans/(self.map_resolution*self.lidar_scale_to_map_scale), 0, 200)
+        zs = np.clip(observation/float(self.map_resolution), 0, 200)
+        ds = np.clip(scans/float(self.map_resolution), 0, 200)
 
         #rounding for indexing
-        scans = scans.astype(int)  
-        observation = observation.astype(int)
+        ds = np.rint(ds).astype(int)  
+        zs = np.rint(zs).astype(int)
 
         #get probabilities
-        result = self.sensor_model_table[observation, scans]
+        result = self.sensor_model_table[zs, ds]
 
         #multiply probabilities
-        result = np.product(result, axis=1)
-
-        return result**(1/2.2)
+        result = np.prod(result, axis=1)
+        result = np.power(result, 1.0/2.2)
+        return result
 
         ####################################
 
