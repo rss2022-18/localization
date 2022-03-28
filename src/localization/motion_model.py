@@ -1,3 +1,4 @@
+#!/usr/bin/env python2
 import numpy as np
 import rospy
 
@@ -13,8 +14,7 @@ class MotionModel:
         self.mean = mean
         self.sigma = sigma
         self.alpha = [0.1, 0.1, 0.1, 0.1]
-        # rospy.get_param('/localization/deterministic')
-        self.deterministic = True
+        self.deterministic = rospy.get_param('~deterministic')
         ####################################
 
     def evaluate(self, particles, odometry):
