@@ -18,7 +18,7 @@ class SensorModel:
             "~scan_theta_discretization")
         self.scan_field_of_view = rospy.get_param("~scan_field_of_view")
         self.lidar_scale_to_map_scale = rospy.get_param(
-            "~lidar_scale_to_map_scale")
+            "~lidar_scale_to_map_scale", 1.0)
 
         ####################################
         # TODO
