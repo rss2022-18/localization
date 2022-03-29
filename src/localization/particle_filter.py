@@ -64,7 +64,8 @@ class ParticleFilter:
         #     odometry you publish here should be with respect to the
         #     "/map" frame.
         self.odom_pub  = rospy.Publisher("/pf/pose/odom", Odometry, queue_size = 1)
-        self.viz_pub   = rospy.Publisher("/particle_points", Marker, queue_size=1)
+        self.visualize_pub   = rospy.Publisher("/particle_points", Marker, queue_size=1)
+        self.visualize_pos   = VisualizePos()
         
         # Initialize the models
         self.motion_model = MotionModel()
@@ -88,13 +89,16 @@ class ParticleFilter:
 
         # Debugging and visualization
         self.visuals = True
-        self.noise   = False
+        self.noise   = rospy.get_param('~deterministic')
+        #self.noise   = False
 
         # Transform Listeners
         self.br_transform = tf.TransformBroadcaster()
         self.tf_listener = tf.TransformListener()
 
     def publish_odometry(self, x_avg, y_avg, quat):
+        
+
         p = Odometry()
         p.header.frame_id = "/map"
         p.header.stamp = rospy.Time.now()
@@ -126,10 +130,10 @@ class ParticleFilter:
     Determine the "average" particle pose and publish that transform. 
     """
     def lidar_cb(self, data):
-        print("Lidar!")
+        #print("Lidar!")
         with self.lock_thread:  # ROS Callbacks are not thread safe!
             angle_step = int(np.ceil(len(data.ranges)/float(self.num_beams_per_particle)))
-            data_downsized = np.array(data.ranges)[::angle_step]
+            data_downsized = np.array(data.ranges)[::angle_step] # TODO Look into this more 
 
             # Sensor Model
             self.particle_prob = self.sensor_model.evaluate(self.particle_pos, data_downsized)
@@ -143,9 +147,24 @@ class ParticleFilter:
             #Change particle positions and publish to pose odom.
             x_avg = stats.mode(self.particle_pos[:,0]).mode[0]
             y_avg = stats.mode(self.particle_pos[:,1]).mode[0]
+
+
+
             th_avg= stats.mode(self.particle_pos[:,2]).mode[0]  # a yaw value
 
-            pub_quat = quaternion_from_euler(0,0,th_avg)
+            sum_of_sin = np.sum(np.sin(self.particle_pos[:,2]))
+            sum_of_cos = np.sum(np.cos(self.particle_pos[:,2]))
+            th_avg_ang = np.arctan2(sum_of_sin, sum_of_cos)
+
+            pub_quat = quaternion_from_euler(0,0,th_avg_ang)
+
+            #pub_quat = quaternion_from_euler(0,0,th_avg)
+
+            #TODO: Visualize Particles. 
+            if self.visuals:
+                #print('Hi! Visualizing')
+                self.visualize_pos.draw(self.particle_pos)
+                self.visualize_pub.publish(self.visualize_pos.line)
 
 
             #publish our odometry!
@@ -164,7 +183,7 @@ class ParticleFilter:
     """
     def odom_cb(self, data):
     
-        print("Odometry!")
+        #print("Odometry!")
         with self.lock_thread: # ROS Callbacks are not thread safe!
             odom_to_world = PoseStamped()
             odom_to_world.header = data.header
@@ -176,20 +195,20 @@ class ParticleFilter:
                 self.t_minus_1 = rospy.get_time()
                 
                 #state is x,y,theta
-                th = self.quat_to_pitch(pt_trans.pose.orientation)
+                th = self.quat_to_yaw(pt_trans.pose.orientation)
 
                 state = [pt_trans.pose.position.x, pt_trans.pose.position.y, th]
                 print("Initial Point:" + str(state))
                 self.particle_pos = np.random.normal(loc=state, 
-                                                    scale=[1.5,1.5,np.pi/6], 
+                                                    scale=[0.5,0.5,np.pi/8],  # Try with no noise  [1.5,1.5,np.pi/6]
                                                     size=(self.num_particles,3))
                 return
             
             #Have the option to add noise to odometry, in this case normal noise
             if self.noise:
-                noise_x = np.random.normal(scale=0.25)
-                noise_y = np.random.normal(scale=0.25)
-                noise_th= np.random.normal(scale=np.pi/6)
+                noise_x = np.random.normal(scale=0.125) #normal distribution noise
+                noise_y = np.random.normal(scale=0.125)
+                noise_th= np.random.normal(scale=np.pi/16)  # Try with no noise
             else:
                 noise_x = 0
                 noise_y = 0
@@ -210,6 +229,11 @@ class ParticleFilter:
             # Position:
             (x_avg, y_avg) = np.mean(self.particle_pos[:,:2], axis=0)
 
+
+            if self.visuals:
+                #print('Hi! Visualizing')
+                self.visualize_pos.draw(self.particle_pos)
+                self.visualize_pub.publish(self.visualize_pos.line)
 
             """
             Consider the mean of circular quantities. 
@@ -233,12 +257,12 @@ class ParticleFilter:
         with self.lock_thread: # ROS callbacks are not thread safe!
             x = data.pose.pose.position.x
             y = data.pose.pose.position.y
-            th= self.quat_to_pitch(data.pose.pose.orientation)
-            self.particle_pos = np.random.normal(loc=[x,y,th], scale=[1.5,1.5,np.pi/6], size=(self.num_particles,3))
+            th= self.quat_to_yaw(data.pose.pose.orientation)
+            self.particle_pos = np.random.normal(loc=[x,y,th], scale=[0.5,0.5,np.pi/8], size=(self.num_particles,3))  #[1.5,1.5,np.pi/6]
 
     
 
-    def quat_to_pitch(self, quaternion):
+    def quat_to_yaw(self, quaternion):
         
         my_quat = [quaternion.x, quaternion.y, quaternion.z, quaternion.w]
         rpy = euler_from_quaternion(my_quat)
@@ -247,6 +271,38 @@ class ParticleFilter:
         yaw  = rpy[2]
 
         return yaw
+
+
+
+"""
+Used for visualizing our particles. 
+"""
+class VisualizePos:
+    def __init__(self):
+
+        # Set parameters for the published message. 
+        self.line = Marker()
+        self.line.type = Marker.POINTS
+        self.line.header.frame_id = "/map"
+        self.line.scale.x = 0.1
+        self.line.scale.y = 0.1
+        self.line.color.a = 1.
+        self.line.color.r = 1
+        self.line.color.g = 1
+        self.line.color.b = 0
+    
+    def draw(self, positions):
+        x_pos = positions[:,0]
+        y_pos = positions[:,1]
+
+        self.line.points = []
+
+        for i in range(len(x_pos)):
+            point = Point()
+            point.x = x_pos[i]
+            point.y = y_pos[i]
+
+            self.line.points.append(point)
 
 
 
