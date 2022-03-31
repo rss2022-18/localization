@@ -154,7 +154,8 @@ class SensorModel:
         # This produces a matrix of size N x num_beams_per_particle
 
         scans = self.scan_sim.scan(particles)
-
+        rospy.loginfo("Observation and Scans Shapes: %s, %s",
+                      str(observation.shape), str(scans.shape))
         # conversion from meters to pixels
         zs = np.clip(observation/float(self.map_resolution), 0, 200)
         ds = np.clip(scans/float(self.map_resolution), 0, 200)
@@ -164,6 +165,7 @@ class SensorModel:
         zs = np.rint(zs).astype(int)
 
         # get probabilities
+        rospy.loginfo("Ds and Zs Shapes: %s, %s", str(ds.shape), str(zs.shape))
         result = self.sensor_model_table[zs, ds]
 
         # multiply probabilities
